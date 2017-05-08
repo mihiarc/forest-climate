@@ -84,45 +84,84 @@ dat$spgrpcd <- substr(dat$id,6,7)
 library(plyr)
 gsv <- dbReadTable(conn, "gsvol_weight_spgrpcd_spcd")
 gsv <- ddply(gsv, .(fips,SPGRPCD), summarize, gsvolcf=sum(gsvolcf,na.rm = T))
+             
+             
+             
+###################################################################################
+### scale net return values:
+### faustmann solution is the net return to a patch of land capable of supporting
+### the full rotation of a tree in a particular species group.
+### To convert net return from the patch level to the acre level,
+### we scale the net return value by the average trees per acre in a county
+### according to the tree's forest type group.
+##################################################################################
 
-# load acres and species key to join spgrpcd to fortypcd in nr data
+acres <- dbReadTable(conn, 't003_timber_acres')
+trees <- dbReadTable(conn, 't008_number_of_trees')
 
-key <- dbReadTable(conn, "key_forest_species")
-acres <- dbReadTable(conn, "t003_timber_acres")
+#drop non-private land and average over all evaluation groups
+
 acres <- ddply(acres, .(STATECD,COUNTYCD,OWNGRPCD,FORTYPCD), summarize, acres=mean(T003_Area.of.timberland.acres))
 acres <- acres[acres$OWNGRPCD==40,]
+trees <- ddply(trees, .(STATECD,COUNTYCD,OWNGRPCD,SPGRPCD,FORTYPCD), summarize,
+               trees=mean(trees))
+trees <- trees[trees$OWNGRPCD==40,]
+trees$fips <- paste(formatC(trees$STATECD, format='d', width = 2, flag = '0'),
+                    formatC(trees$COUNTYCD, format = 'd', width = 3, flag='0'), sep='')
+trees$spgrpcd <- formatC(trees$SPGRPCD, format = 'd', width = 2, flag='0')
+
+#load fortyp-spgrp key
+
+key <- dbReadTable(conn, "key_forest_species")
+
 acres <- merge(acres,key,by.x='FORTYPCD',by.y='fortypcd')
 acres$fips <- paste(formatC(acres$STATECD, format='d', width = 2, flag = '0'),
                     formatC(acres$COUNTYCD, format = 'd', width = 3, flag='0'), sep='')
 acres <- ddply(acres, .(fips,spgrpcd), summarize, acres=mean(acres))
 acres$spgrpcd <- formatC(acres$spgrpcd, format = 'd', width = 2, flag='0')
 
+trees.acres <- merge(trees,acres, by = c('fips','spgrpcd'))
+
+trees.acres$tpa <- trees.acres$trees / trees.acres$acres
+
+tpa <- trees.acres[c(1,2,7:10)]
+
+# merge tpa with net return
+
+nr <- merge(dat, tpa, by=c('fips','spgrpcd'))
+nr$nr_base <- nr$nr_base * nr$tpa
+nr$nr_cc <- nr$nr_cc * nr$tpa
+
+#################################
+## net returns to all timberland species
+
 #compute weighted average net return and non-weighted nr
 
-nr.volwt <- merge(dat,gsv,by.x=c('fips','spgrpcd'),by.y=c('fips','SPGRPCD'))
+nr.volwt <- merge(nr,gsv,by.x=c('fips','spgrpcd'),by.y=c('fips','SPGRPCD'))
 nr.volwt <- ddply(nr.volwt, .(fips), summarize, nr_base_volwt=weighted.mean(nr_base, w=gsvolcf),
                      nr_cc_volwt=weighted.mean(nr_cc, w=gsvolcf))
 
 # weighting by growing stock volume is the prefered method becuase there is significant variation
 # at the spgrp level
 
-nr.acwt <- merge(dat,acres,by=c('fips','spgrpcd'))
-nr.acwt <- ddply(nr.acwt, .(fips), summarize, nr_base_acwt=weighted.mean(nr_base, w=acres),
-                 nr_cc_acwt=weighted.mean(nr_cc, w=acres)) 
+# nr.acwt <- merge(dat,acres,by=c('fips','spgrpcd'))
+# nr.acwt <- ddply(nr.acwt, .(fips), summarize, nr_base_acwt=weighted.mean(nr_base, w=acres),
+#                  nr_cc_acwt=weighted.mean(nr_cc, w=acres)) 
 
 # nr.acwt does not work because there is no varitation in acreage at the spgrpcd level
 # so the result comes out the same as the non-weighted case
 
-nr <- ddply(dat, .(fips), summarize, nr_base=mean(nr_base), nr_cc=mean(nr_cc))
+#nr <- ddply(dat, .(fips), summarize, nr_base=mean(nr_base), nr_cc=mean(nr_cc))
 
 # calculate percent change in nr
 
-nr$chg <- (nr$nr_cc - nr$nr_base) / nr$nr_base
+#nr$chg <- (nr$nr_cc - nr$nr_base) / nr$nr_base
 nr.volwt$chg <- (nr.volwt$nr_cc_volwt - nr.volwt$nr_base_volwt) / nr.volwt$nr_base_volwt
-nr.acwt$chg <- (nr.acwt$nr_cc_acwt - nr.acwt$nr_base_acwt) / nr.acwt$nr_base_acwt
+#nr.acwt$chg <- (nr.acwt$nr_cc_acwt - nr.acwt$nr_base_acwt) / nr.acwt$nr_base_acwt
 
 # load map packages
 
+library(ggplot2)
 library(maptools)
 library(ggmap)
 
@@ -151,19 +190,13 @@ ggplot()+
   coord_map(project='polyconic')+
   theme(plot.margin=unit(c(0,0,0,0),"mm"))+
   theme_nothing(legend = T)
+##################################################################################
 
-# calculate value change by scaling up based on acres in each forest type
 
-acres <- ddply(total_timberland_acres, .(STATECD,COUNTYCD,OWNGRPCD), summarize, acres=mean(total_timberland_acres, na.rm = T))
-acres <- acres[acres$OWNGRPCD==40,]
-acres$fips <- paste(formatC(acres$STATECD, format='d', width = 2, flag = '0'),
-                    formatC(acres$COUNTYCD, format = 'd', width = 3, flag='0'), sep='')
-acres <- acres[-c(1:3)]
-
+acres <- ddply(acres, .(fips), summarize, acres=sum(acres))
 nr <- merge(nr.volwt, acres, by='fips')
 nr$val_base <- nr$nr_base_volwt * nr$acres
 nr$val_cc <- nr$nr_cc_volwt * nr$acres
-nr$val_chg <- (nr$val_cc - nr$val_base) / nr$val_base
 
 val_chgb <- weighted.mean(nr$chg, w=nr$acres)
 val_chg_nowt <- mean(nr$chg)
@@ -172,7 +205,7 @@ val_base <- sum(nr$nr_base_volwt * nr$acres)
 val_cc <- sum(nr$nr_cc_volwt * nr$acres)
 val_chg <- (val_cc - val_base) / val_base
 
-# by 2050 total timberland value increases by approximately 6% 
+# by 2050 total timberland value increases by approximately 7.3% 
 # relative to a baseline with no climate change
 
 # plot value of timberland
