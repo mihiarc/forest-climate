@@ -98,6 +98,7 @@ gsv <- ddply(gsv, .(fips,SPGRPCD), summarize, gsvolcf=sum(gsvolcf,na.rm = T))
 
 acres <- dbReadTable(conn, 't003_timber_acres')
 trees <- dbReadTable(conn, 't008_number_of_trees')
+gsv <- dbReadTable(conn, "t018_timber_volume")
 
 #drop non-private land and average over all evaluation groups
 
@@ -157,8 +158,9 @@ nr.volwt <- ddply(nr.volwt, .(fips), summarize, nr_base_volwt=weighted.mean(nr_b
 
 #nr$chg <- (nr$nr_cc - nr$nr_base) / nr$nr_base
 nr.volwt$chg <- (nr.volwt$nr_cc_volwt - nr.volwt$nr_base_volwt) / nr.volwt$nr_base_volwt
+dbWriteTable(conn,'nr_forestland_v2',nr.volwt, overwrite=T)
 #nr.acwt$chg <- (nr.acwt$nr_cc_acwt - nr.acwt$nr_base_acwt) / nr.acwt$nr_base_acwt
-
+nr.volwt <- dbReadTable(conn, 'nr_forestland_v2')
 # load map packages
 
 library(ggplot2)
